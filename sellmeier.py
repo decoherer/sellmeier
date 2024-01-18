@@ -17,9 +17,16 @@ from qpm import Qpm
 #  msesupplies d31=2.54, d32=4.35, d33=16.9, d24=3.64, d15=1.91
 # laser components d31=2.54, d32=4.35, d33=16.9, d24=3.64, d15=1.91
 
-def groupindex(λ,sell,temp=20,Δλ=0.1): # ng = n(λ) - λ dn/dλ = n(ω) + ω dn/dω
+def groupindex(λ,sell,temp=20,Δλ=0.01): # ng = n(λ) - λ dn/dλ = n(ω) + ω dn/dω
     Δn = index(λ+Δλ/2,sell,temp=temp) - index(λ-Δλ/2,sell,temp=temp) # print('n,λ,Δn,Δλ',index(λ,sell,temp=temp),λ,Δn,Δλ)
     return index(λ,sell,temp=temp) - λ*Δn/Δλ
+def dispersion(λ,sell,temp=20,Δλ=0.01): # returns dispersion in units of ps/nm/mm
+    Δigv = inversegroupvelocity(λ+Δλ/2,sell,temp) - inversegroupvelocity(λ-Δλ/2,sell,temp) # s/m
+    return 1e12*1e3 * Δigv/Δλ # ps/nm/km
+def sqrfs2sqrnm(β): # β in fs²
+    return 0.5 * (2*pi*299792458)**2 * (1e-15**2*β) * (1e9**2) # in nm²
+def sqrfs2pspernm(β,λ): # β in fs², λ in nm
+    return -(2*pi*299792458)/(1e-9*λ)**2 * (1e-15**2*β) * (1e12*1e-9) # in ps/nm
 def groupvelocity(λ,sell,temp=20): # in units of c
     return 1/groupindex(λ,sell=sell,temp=temp)
 def inversegroupvelocity(λ,sell,temp=20): # seconds per meter
@@ -533,7 +540,7 @@ def index(w,sell,temp=20,warn=True): # x is wavelength in nm
         n = np.real(pierceamorphoussilicon(x))
     if sell=="sichan" or sell=="sichanz" or sell=="sichany": # Chandler-Horowitz and Amirtharaj 2005
         n = sellmeier15(x,11.67316,0.004482633,1.108205**2)
-    if sell=="sio2" or sell=="sio2z" or sell=="sio2y" or sell=="sio2cvi":
+    if sell=="sio2" or sell=="sio₂" or sell=="sio2z" or sell=="sio2y" or sell=="sio2cvi":
         n = sellmeier9(x,6.96166300e-1,4.07942600e-1,8.97479400e-1,4.67914826e-3,1.35120631e-2,97.9340025)
     if sell=="sio2schott":
         n = sellmeier9(x,6.70710810E-01,4.33322857E-01,8.77379057E-01,4.49192312E-03,1.32812976E-02,9.58899878E+01)
@@ -969,10 +976,10 @@ def qpmplot(Λs=None,wp=[405,532,780],temp=20,sell='ktpwg',Type='yzy',npy=None,n
         from skimage import measure
         cs = measure.find_contours(zz,invΛ, fully_connected='low', positive_orientation='low')
         from wavedata import Wave
-        wx,wy = Wave(x),Wave(y)
-        return [Wave( wy(c[:,1]), wx(c[:,0]) ) for c in cs][0]
-    pwaves = [contourwave(1/p,zz).rename(f'{abs(p):.2f}µm')
-         for p in Λs] if Λs is not None else []
+        wx,wy = Wave(data=x),Wave(data=y)
+        return [Wave( wy(c[:,1]).y, wx(c[:,0]).y ) for c in cs][0]
+    pwaves = [contourwave(1/p,zz).removenans().rename(f'{abs(p):.2f}µm')
+        for p in Λs] if Λs is not None else []
     from plot import plot
     save = f"phase matching plot, {sell} {Type}{f' backward {sig}'*(prop[0]<1)}{f' backward {idl}'*(prop[1]<1)}"
     import matplotlib.pyplot as plt
@@ -982,7 +989,7 @@ def qpmplot(Λs=None,wp=[405,532,780],temp=20,sell='ktpwg',Type='yzy',npy=None,n
     if Type=='zzz': zz = zz**(1/3)
     ww = Wave2D(zz,xs=x,ys=y)
     plot(waves=pwaves+pumpwaves,
-        c=['k' for p in pwaves]+pumpcolors,i=['2' for p in pwaves]+['1' for p in pumpwaves],
+        c=['k' for p in pwaves]+pumpcolors,li=['2' for p in pwaves]+['1' for p in pumpwaves],
         lines=colorlines,image=ww,x=xlabel,y=ylabel,legendtext='',
         xlim=(x0*prop[0],x1*prop[0]),ylim=(x0*prop[1],x1*prop[1]),corner='lower right',
         colormap=getattr(plt.cm,'terrain_r'),fontsize=9,save=save,**plotargs)
@@ -1004,7 +1011,7 @@ def w1vsw2old(w1=None,w2=None,Λ=None,w2onxaxis=True,x0=440,x1=3000,num=101,**pp
 def w1vsw2(*args,**kwargs):
     return phasematchcurve(*args,**kwargs)
 def phasematchcurve(w1=None,w2=None,Λ=None,x0=500,x1=3000,dx=5,prop=None,plot=False,qpmargs=None,**ppargs):
-    prop = prop if prop else (1,1) if Λ else (sign(w1),sign(w2))
+    prop = prop if prop is not None else ((1,1) if Λ is not None else (sign(w1),sign(w2)))
     # option for ±halfmax of phasematchcurve?
     def pperiod(x,y):
         if qpmargs is not None:
@@ -1155,7 +1162,7 @@ def loadshgscan(file,skip=None,returnce=True,pumpince=False):
     # assert all(ce==100*shg/pumpout**2)
     assert np.allclose(0,ce-100*shg/pumpout**2)
     return wavelength,pumpin,pumpout,shg,ce
-def qpmphasematchcontours(Λ,wp=(405,532,780),x0=800,x1=1600,dx=100,qpmargs=None,ppargs=None):
+def qpmphasematchcontours(Λ,x0=800,x1=1600,dx=100,qpmargs=None,ppargs=None):
     def pp(x,y):
         from modes import qpm
         @np.vectorize

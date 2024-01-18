@@ -4,8 +4,6 @@ Calculate index of refraction or poling period for various nonlinear optical mat
 
 ```python
 from sellmeier import *
-import numpy as np
-import matplotlib.pyplot as plt
 ```
 
 ## Index of refraction
@@ -215,7 +213,7 @@ Find the SFG wavelength given 30µm poling period and 40°C temperature
 polingperiod(1550,None,'ktp',Λ=-30,Type='yzy',temp=40)
 ```
 
-    multiple values found for poling period Λ=-30µm
+    multiple values found for poling period Λ=-30µm, values: (809.2186002364344, 878.5861730313546)
     
 
 
@@ -389,7 +387,7 @@ The phasematching curve can be plotted by giving the poling period instead of th
 
 
 ```python
-phasematchcurve(Λ=1e9,sell='ktpwg',Type='yzy',plot=True);
+phasematchcurve(Λ=inf,sell='ktpwg',Type='yzy',plot=True);
 ```
 
 
@@ -408,6 +406,26 @@ print(λ2[:3]);
     [3000.0, 2995.0, 2990.0]
     [2610.7103751284417, 2611.904576863314, 2613.0860848560083]
     
+
+Here are two ways to generate the phasematching curves for a given period.
+
+
+```python
+from wavedata import Wave,wrange
+Λs,λzs = [-10,-100,inf,+100,+10],wrange(400,4000,10)
+with np.errstate(invalid='ignore',divide='ignore'):
+    w0s = [Wave(*phasematchcurve(Λ=Λ,sell='ktpwg',Type='yzy',x0=400,x1=4000,dx=10,plot=False),f"Λ = {Λ:g} µm") for Λ in Λs]
+    ws = [Wave([polingperiod(w1=None,w2=λz,Λ=Λ,sell='ktpwg',Type='yzy') for λz in λzs],λzs) for Λ in Λs]
+Wave.plots(*w0s,*ws,c='01234kkkkk',l='0000044444',x='λz (nm)',y='λy (nm)',xlim=(400,4000),ylim=(400,4000),aspect=1,fork=0);
+```
+
+    multiple values found for poling period Λ=100µm, values: (2103.3337165802545, 2562.0714444305268)
+    multiple values found for poling period Λ=100µm, values: (2218.697660723218, 2445.4652076609345)
+    
+
+
+![png](README_files/README_66_1.png)
+
 
 
 ```python
