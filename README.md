@@ -407,7 +407,7 @@ print(λ2[:3]);
     [2610.7103751284417, 2611.904576863314, 2613.0860848560083]
     
 
-Here are two ways to generate the phasematching curves for a given period.
+Here are several different ways to generate the phasematching curves for a given period.
 
 
 ```python
@@ -429,5 +429,9 @@ Wave.plots(*w0s,*ws,c='01234kkkkk',l='0000044444',x='λz (nm)',y='λy (nm)',xlim
 
 
 ```python
-
+qpmplot(Λs=[10,100,inf,-100],x0=500,x1=2300,fork=0);
 ```
+
+
+![png](README_files/README_67_0.png)
+

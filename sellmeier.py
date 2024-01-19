@@ -969,16 +969,14 @@ def qpmplot(Λs=None,wp=[405,532,780],temp=20,sell='ktpwg',Type='yzy',npy=None,n
         w2 = np.where(w2>x0,w2,nan)
         return np.where(w2<x1,w2,nan)
     pumpwaves,pumpcolors = [np.sign(y[0])*Wave(pumpw2(x,float(w)),x,name=f'{w}nm'+(n==0)*' SFG') for n,w in enumerate(wp)],[rgbtostr(colors[w]) for w in wp]
-    colorlines = [{'xdata':[x0*prop[0],x1*prop[0]], 'ydata':[x0*prop[1],x1*prop[1]], 'color':'gray','linestyle':(0, (1, 1))}] # + plotargs.pop('lines',[])
-    # pwaves = [w1vsw2(Λ=p,temp=temp,sell=sell,Type=Type,npy=npy,npz=npz,w2onxaxis=w2onxaxis,x0=x0,x1=x1).rename(f'{abs(p):.1f}µm')
-    #      for p in Λs] if Λs is not None else [] # on w1vsw2 error, check that x0,x1 range is large enough
+    lines = [{'xdata':[x0*prop[0],x1*prop[0]], 'ydata':[x0*prop[1],x1*prop[1]], 'color':'gray','linestyle':(0, (1, 1))}]
     def contourwave(invΛ,zz):
         from skimage import measure
         cs = measure.find_contours(zz,invΛ, fully_connected='low', positive_orientation='low')
         from wavedata import Wave
         wx,wy = Wave(data=x),Wave(data=y)
         return [Wave( wy(c[:,1]).y, wx(c[:,0]).y ) for c in cs][0]
-    pwaves = [contourwave(1/p,zz).removenans().rename(f'{abs(p):.2f}µm')
+    pwaves = [contourwave(1/p,zz).removenans().rename(f'{p:g} µm')
         for p in Λs] if Λs is not None else []
     from plot import plot
     save = f"phase matching plot, {sell} {Type}{f' backward {sig}'*(prop[0]<1)}{f' backward {idl}'*(prop[1]<1)}"
@@ -990,7 +988,7 @@ def qpmplot(Λs=None,wp=[405,532,780],temp=20,sell='ktpwg',Type='yzy',npy=None,n
     ww = Wave2D(zz,xs=x,ys=y)
     plot(waves=pwaves+pumpwaves,
         c=['k' for p in pwaves]+pumpcolors,li=['2' for p in pwaves]+['1' for p in pumpwaves],
-        lines=colorlines,image=ww,x=xlabel,y=ylabel,legendtext='',
+        lines=lines,image=ww,x=xlabel,y=ylabel,legendtext='',
         xlim=(x0*prop[0],x1*prop[0]),ylim=(x0*prop[1],x1*prop[1]),corner='lower right',
         colormap=getattr(plt.cm,'terrain_r'),fontsize=9,save=save,**plotargs)
     return ww
