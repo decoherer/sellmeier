@@ -1,8 +1,17 @@
 import numpy as np
 from numpy import sqrt,pi,nan,inf,sign,abs,exp,log,sin,cos
 import scipy, scipy.optimize, functools
-import sellmeier
+import sell
 
+def gaussianfieldvstime(t,Δt,b=0): # gaussian pulse E(t), Δt = FWHM intensity, b = chirp
+    return exp(-2*log(2)*t**2/Δt**2)*exp(1j*b*t**2) if b else exp(-2*log(2)*t**2/Δt**2)
+# exp(-½t²/σ²) → σ exp(-½σ²ω²)
+def sqrfs2sqrnm(β): # β in fs²
+    return 0.5 * (2*pi*299792458)**2 * (1e-15**2*β) * (1e9**2) # in nm²
+def sqrfs2pspernm(β,λ): # β in fs², λ in nm
+    return -(2*pi*299792458)/(1e-9*λ)**2 * (1e-15**2*β) * (1e12*1e-9) # in ps/nm
+# def chirp(x,b): # b in nm²
+#     return exp(1j*b*(x-1/λ)**2)
 def phaseshift(λ,L,sell='air',temp=20): # λ in nm, L in mm # return total phase in radians
     return 2*pi*sellmeier.index(λ,sell,temp=temp)*1e6*L/λ
 def coherencelength(Δλ,λ): # in mm (Δλ,λ in nm)
@@ -112,16 +121,16 @@ def transformlimitedbandwidth(dt,λ): # dt=tFWHM in ns, returns Δλ in nm
     # tFWHM * fFWHM = 2 log(2) / pi = 0.441271
     df = 2*log(2)/pi/dt # in GHz
     return df*λ**2/299792458
-def transformlimitedpulse(f,f0,dt): # dt = tFWHM
+def transformlimitedpulseamplitude(f,f0,dt): # dt = tFWHM, returns pulse amplitude not intensity
     return exp(-pi**2 * (f-f0)**2 * dt**2 / log(2))
     # tFWHM * fFWHM = 2 log(2) / pi = 0.441271
-    # transformlimitedpulse(1,0,0.441271/2) = 0.5
+    # transformlimitedpulseamplitude(1,0,0.441271/2) = 0.5
 def pulsesum(x,t,f0,reptime,dt,sell='air'): # dt = tFWHM
     c = 299.792458 # in mm/ns
     num,frr = 10*int(reptime/dt),reptime
     fs = f0 + frr*np.linspace(-num,num,2*num+1)
     ns = (lambda x:1)(fs)
-    return transformlimitedpulse(fs,f0,dt) * exp(1j*2*pi*fs*(x*ns/c-t))
+    return transformlimitedpulseamplitude(fs,f0,dt) * exp(1j*2*pi*fs*(x*ns/c-t))
 def fwhmgaussian(x,x0,fwhm):
     return exp(-4 * log(2) * (x-x0)**2 / fwhm**2)
 def besselj(n,β): # sum (k=-inf to inf) of besselj(k,β)² = 1
@@ -248,6 +257,8 @@ def sbend(x,L,w):
     return np.where( x<0, 0, np.where( L<x, w, (1-np.cos(np.pi*x/L)) * w/2 ))
 def sbendroc(L,w):
     return 2/np.pi**2 * L**2/w
+def sbendx(w,roc):
+    return sqrt(0.5*np.pi**2*roc*w)
 
 if __name__ == '__main__':
     print(phaseshift(1064,1.064))

@@ -1,6 +1,7 @@
 import numpy as np
-from wavedata import Wave,wrange,dotdict
-import sellmeier
+import sell
+from joblib import Memory
+memory = Memory('j:/backup', verbose=0) # use as @memory.cache
 
 class Qpm():
     """docstring for Qpm"""
@@ -52,6 +53,7 @@ class Qpm():
             print(f"ΔΛ/Δλ: {ΔΛ:g}µm/nm")
         return ΔΛ
     def dcwavelengths(self,λp=None,Λ0=None,temp=None,λa0=None,λa1=None,λb0=None,λb1=None,Δλ=300,alt=False,debug=False):
+        from wavedata import Wave
         λp = λp if λp is not None else self.λp
         Λ0 = Λ0 if Λ0 is not None else self.Λ
         temp = temp if temp is not None else self.temp
@@ -107,6 +109,7 @@ class Qpmlnwg():
         self.λ1,self.λ2,self.w,self.d,self.a,self.r,self.aa,self.temp,self.atemp,self.rtemp = λ1,λ2,w,d,a,r,aa,temp,atemp,rtemp
         self.sell,self.Type = 'ln','zzz'
         # self.__dict__.update(qpmargs)
+        from wavedata import dotdict
         self.qpmargs = dotdict(qpmargs)
         _,_,self.λ3 = sellmeier.qpmwavelengths(λ1,λ2)
     def __call__(self,λ1=None,λ2=None,w=None,d=None,a=None,r=None,aa=None,temp=None,atemp=None,rtemp=None):
@@ -116,7 +119,7 @@ class Qpmlnwg():
         λ1 = λ1 if λ1 is not None else self.λ1
         λ2 = λ2 if λ2 is not None else self.λ2
         temp = temp if temp is not None else self.temp
-        return sellmeier.polingperiod(λ1,λ2,sell='lnwg',Type=self.Type,temp=temp)
+        return sellmeier.polingperiod(λ1,λ2,sell=self.sell+'wg',Type=self.Type,temp=temp)
     def qd(self,λ1=None,λ2=None,w=None,d=None,a=None,r=None,aa=None):
         from modes import qpm,Qpmdata
         # λ1,λ2,w,d,a,r,aa = [x if x is not None else getattr(self,s) for x,s in zip((λ1,λ2,w,d,a,r,aa),'λ1 λ2 w d a r aa'.split())]
@@ -145,13 +148,14 @@ class Qpmlnwg():
         temp = temp if temp is not None else self.temp
         return 1/(1/qd.Λ - 1/self.sellmeierΛ(temp=20) + 1/self.sellmeierΛ(temp=temp))
     def dcwavelengths(self,λp=None,Λ0=None,temp=None,λa0=None,λa1=None,λb0=None,λb1=None,Δλ=200,alt=False,debug=False):
+        from wavedata import Wave
         λp = λp if λp is not None else self.λ3
         Λ0 = Λ0 if Λ0 is not None else self.Λ()
         temp = temp if temp is not None else self.temp
         λa0,λa1 = λa0 if λa0 is not None else self.λ1-Δλ,λa1 if λa1 is not None else self.λ1+Δλ
         λb0,λb1 = λb0 if λb0 is not None else self.λ2-Δλ,λb1 if λb1 is not None else self.λ2+Δλ
         λa0,λb0 = max(λa0,λp+1),max(λb0,λp+1)
-        # test and print warning for λp < λdegen /2?
+        # test and print warning for λp < λdegen/2?
         wix,wsx = np.linspace(λb0,λb1,int(np.round(λb1-λb0+1))),np.linspace(λa0,λa1,int(np.round(λa1-λa0+1)))
         @np.vectorize
         def λi(λs):
@@ -169,26 +173,32 @@ class Qpmlnwg():
     def λdc(self,*args,**kwargs):
         return self.dcwavelengths(*args,**kwargs)
     def Δλvswidth(self,ws=None,plot=False,save=None,**plotargs):
+        from wavedata import Wave
         v = self.Λvswidth(ws=ws)
         x0 = v.quadminloc()
         q0 = self(w=int(round(x0)))
         return Wave([self.Λ2Δλ1(Λ,Λ0=q0.Λ()) for Λ in v],v.x)
-    def sfgdesigndoc(self,dw=0.5,prs=None,show=True,fork=True,**plotargs):
+    def sfgdesigndoc(self,dw=0.5,mfw=None,prs=None,show=True,fork=True,temp1=100,**plotargs):
         from pypowerpoint import Presentation,addadvrslide
+        from wavedata import wrange
         prs = prs if prs is not None else Presentation()
         titles = [
             f"{self.λ1}+{self.λ2}→{self.λ3:.0f} poling period vs width",
             f"{self.λ1}+{self.λ2}→{self.λ3:.0f} conversion efficiency vs width",
             f"{self.λ1}+{self.λ2}→{self.λ3:.0f} phasematching",
             f"MFD vs width",
-            f"Transmission vs width" ]
+            f"Transmission vs width" 
+            ]
         subtitles = ['','','','','']
+        mfw = mfw if mfw is not None else 7 if 1999<max(self.λ1,self.λ2) else 6
         pngs = [
-            self.Λvswidth(ws=wrange(6,12,0.5),temps=[20,40] if 20==self.temp else [20,self.temp],show=show,fork=fork,**plotargs),
-            self.ηvswidth(ws=wrange(6,12,0.5),show=show,fork=fork,**plotargs),
+            self.Λvswidth(ws=wrange(6,12,dw),temps=[20,temp1] if 20==self.temp else [20,self.temp],show=show,fork=fork,**plotargs),
+            self.ηvswidth(ws=wrange(6,12,dw),show=show,fork=fork,**plotargs),
             self.phasematchingcurves(show=show,fork=fork,**plotargs),
-            self.mfdsvswidth(ws=wrange(1,6,dw),show=show,fork=fork,**plotargs),
-            self.transmissionsvswidth(ws=wrange(1,6,dw),show=show,fork=fork,**plotargs) ]
+            self.mfdsvswidth(ws=wrange(1,mfw,dw),show=show,fork=fork,**plotargs),
+            self.transmissionsvswidth(ws=wrange(1,mfw,dw),show=show,fork=fork,**plotargs) 
+            ]
+
         print(pngs)
         from time import sleep
         sleep(20)
@@ -198,19 +208,20 @@ class Qpmlnwg():
         prs.save(file)
         return prs
     def phasematchingcurve(self,Λ0=None,temp=None,δλ=None,Δλ1=None,Δλ2=None,exact=False,plot=False,save=None,**plotargs):
+        from wavedata import Wave,wrange
+        λ1,λ2 = self.λ1,self.λ2
         save = save if save is not None else f"phasematching λ1 vs λ2, {self.idstr()}"
         Λ0 = Λ0 if Λ0 is not None else self.Λ()
         δλ = δλ if δλ is not None else 25 if exact else 10
-        Δλ1 = Δλ1 if Δλ1 is not None else 200
-        Δλ2 = Δλ2 if Δλ2 is not None else Δλ1
+        Δλ1 = Δλ1 if Δλ1 is not None else 0.25*λ1
+        Δλ2 = Δλ2 if Δλ2 is not None else 0.25*λ1
         temp = temp if temp is not None else self.temp
-        λ1,λ2 = self.λ1,self.λ2
         @np.vectorize
         def pperiod(x,y):
             return self(λ1=x,λ2=y).Λ(temp=temp) if exact else 1/(1/self(λ1=λ1,λ2=λ2).Λ(temp=temp)
-            - 1/sellmeier.polingperiod(λ1,λ2,sell='lnwg',Type=self.Type,temp=temp)
-            + 1/sellmeier.polingperiod( x, y,sell='lnwg',Type=self.Type,temp=temp))
-        x,y = wrange(λ1-0.5*Δλ1,λ1+0.5*Δλ1,δλ),wrange(λ2-0.5*Δλ2,λ2+0.5*Δλ2,δλ)
+            - 1/sellmeier.polingperiod(λ1,λ2,sell=self.sell+'wg',Type=self.Type,temp=temp)
+            + 1/sellmeier.polingperiod( x, y,sell=self.sell+'wg',Type=self.Type,temp=temp))
+        x,y = wrange(λ1-0.5*Δλ1,λ1+0.5*Δλ1,δλ,endround=1),wrange(λ2-0.5*Δλ2,λ2+0.5*Δλ2,δλ,endround=1)
         yy,xx = np.meshgrid(y,x)
         zz = 1/pperiod(xx,yy)
         z0 = 1/Λ0
@@ -220,23 +231,26 @@ class Qpmlnwg():
         px,py = np.arange(len(x)),np.arange(len(y))
         cx,cy = [],[]
         for contour in contours:
-            cx = np.concatenate((cx,contour[:,1],[np.nan]))
-            cy = np.concatenate((cy,contour[:,0],[np.nan]))
+            cx = np.concatenate((cx,contour[:,0],[np.nan]))
+            cy = np.concatenate((cy,contour[:,1],[np.nan]))
         cx,cy = np.interp(cx[:-1],px,x),np.interp(cy[:-1],py,y) # convert array index to wavelength
         u = Wave(cy,cx)
         if plot:
             Wave.plots(u,x='$λ_1$ (nm)',y='$λ_2$ (nm)',grid=1,c='1',xlim='f',ylim='f',aspect=1 if self.λ1==self.λ2 else None,save=save,seed=int(self.λ1+self.λ2),**plotargs)
         return u
     def phasematchingcurves(self,Λ0=None,temps=None,δλ=None,Δλ1=None,Δλ2=None,exact=False,plot=True,save=None,**plotargs):
+        from wavedata import Wave
         Λ0 = Λ0 if Λ0 is not None else self.Λ()
         temps = [20,40] if 20==self.temp else [20,self.temp]
         save = save if save is not None else f"phasematching λ1 vs λ2, {','.join([f'{t:g}C' for t in temps])}, {self.idstr()}"
         us = [self.phasematchingcurve(Λ0=Λ0,temp=temp,δλ=δλ,Δλ1=Δλ1,Δλ2=Δλ2,exact=exact,plot=False,save=save,**plotargs).rename(f"{temp}°C") for temp in temps]
+        u0 = Wave([self.λ2],[self.λ1]).setplot(c='0',m='o',mf='w')
         if plot:
-            Wave.plots(*us,x='$λ_1$ (nm)',y='$λ_2$ (nm)',grid=1,xlim='f',ylim='f',aspect=1 if self.λ1==self.λ2 else None,save=save,seed=int(self.λ1+self.λ2),legendtext=f"Λ = {Λ0:.3f}µm",**plotargs)
+            Wave.plots(*us,u0,x='$λ_1$ (nm)',y='$λ_2$ (nm)',grid=1,xlim='f',ylim='f',aspect=1 if self.λ1==self.λ2 else None,save=save,seed=int(self.λ1+self.λ2),legendtext=f"Λ = {Λ0:.3f}µm",**plotargs)
             return f"figs/{save}.png"
         return us
     def Λvswidth(self,ws=None,temps=None,plot=False,save=None,**plotargs):
+        from wavedata import Wave
         save = save if save is not None else f"Λ vs width, {self.idstr()}"
         ws = ws if ws is not None else np.linspace(6,12,7)
         us = [Wave([self(w=w).Λ(temp=temp) for w in ws],ws,f"{temp}°C" if temps is not None else "").setplot(c=i) for i,temp in enumerate(temps if temps is not None else [None])]
@@ -246,6 +260,7 @@ class Qpmlnwg():
             return f"figs/{save}.png"
         return us if temps is not None else us[0].setplot(c=None)
     def ηvswidth(self,ws=None,noncrit=True,plot=False,save=None,**plotargs):
+        from wavedata import Wave
         save = save if save is not None else f"η vs width, {self.idstr()}"
         ws = ws if ws is not None else np.linspace(6,12,7)
         u = Wave([self(w=w).η() for w in ws],ws)
@@ -260,6 +275,7 @@ class Qpmlnwg():
             return f"figs/{save}.png"
         return u
     def mfdvswidth(self,num=1,axis=0,ws=None,plot=False,**plotargs):
+        from wavedata import Wave
         axis = 0 if 'x'==axis else 1 if 'y'==axis else axis
         assert num in (1,2,3) and axis in (0,1)
         ws = ws if ws is not None else np.linspace(1,5,11)
@@ -269,6 +285,7 @@ class Qpmlnwg():
             return Wave.plots(u,x='width (µm)',y=f"MFD{'xy'[axis]} (µm)",c='00',grid=1,xlim='f',ylim=(0,0.6*abs(self.qpmargs.limits[2])),**plotargs)
         return u
     def mfdsvswidth(self,ws=None,plot=False,save=None,**plotargs):
+        from wavedata import Wave
         save = save if save is not None else f"MFD vs width, {self.idstr()}"
         us = [self.mfdvswidth(num,axis,ws=ws).rename(f"{'xy'[axis]} {self.λ(num):.0f}nm").setplot(c=num+1,l='0' if 0==axis else '1') for num in (1,2,3) for axis in (0,1)]
         if plot or plotargs:
@@ -276,6 +293,7 @@ class Qpmlnwg():
             return f"figs/{save}.png"
         return us
     def transmissionvswidth(self,num=1,ws=None,fiber=None,plot=False,**plotargs):
+        from wavedata import Wave
         assert num in (1,2,3)
         ws = ws if ws is not None else np.linspace(1,5,11)
         mds = [self(w=w).md(num) for w in ws]
@@ -286,6 +304,7 @@ class Qpmlnwg():
             Wave.plots(u,u0,x='width (µm)',y=f"MFD{'xy'[axis]} (µm)",c='00',xlim='f',ylim=(0,None),**plotargs)
         return u,fiber
     def transmissionsvswidth(self,ws=None,plot=False,save=None,**plotargs):
+        from wavedata import Wave
         save = save if save is not None else f"transmission vs width, {self.idstr()}"
         us,fibers = zip(*[self.transmissionvswidth(num,ws=ws) for num in (1,2,3)])
         us = [u.rename(f"{self.λ(num):.0f}nm, PM{f}").setplot(c=num+1) for num,u,f in zip((1,2,3),us,fibers)]
@@ -303,11 +322,13 @@ class Qpmlnwg():
 
 # η vs width plots for DOE 7120
 def ηplot0(s='',plotit=True,**args):
+    from wavedata import Wave
     args = args if args else dict(depth=1.9,ape=23.5,rpe=24.5,sell='ln',res=0.2,apetemp=320,rpetemp=300)
     def peak(w,min=False):
         x = w.minloc() if min else w.maxloc()
         return Wave([0,w.min() if min else w.max()],[x,x])#.setplot(l='1')
     def sfgvswidth(λ1,λ2):
+        from wavedata import wrange
         widths = wrange(4,15,0.2)
         limits = (-15,15,-20,2)
         print('λ1,λ2',λ1,λ2)
@@ -350,6 +371,22 @@ def ηplot0(s='',plotit=True,**args):
                 save='spectral width variation vs width, with dead layer, EXB '+s)
         return us,vs
     return doplot()
+
+@memory.cache
+def lnwgmd(λ=1550,w=6,d=1.9,ape=23.5,rpe=24.5,ape2=0,gap=0,apetemp=320,rpetemp=300,res=0.2,limits=(-15,15,-20,2)): # limits=(-30,30,-40,2)
+    from modes import simplelenziniwaveguide
+    ε = simplelenziniwaveguide(λ=λ,width=w,depth=d,ape=ape,rpe=rpe,ape2=ape2,sell='ln',apetemp=apetemp,rpetemp=rpetemp,gap=gap,res=res,limits=limits)
+    return ε.modesolve(method=None,mode=0,nummodes=(2 if gap else 1),boundary='0000',mdargs=None)
+
+def qd2(λ,w,d=6.0,a=93,r=210,aa=44,verbose=True): # 10w6d93a210r44a # hillclimbqd
+    from qpm import lnwgmd
+    from dielectric import Dielectric
+    md = lnwgmd(λ=λ,w=w,d=d,ape=a,rpe=r,ape2=aa,gap=0,res=0.2,limits=(-15,15,-20,2))
+    md3 = lnwgmd(λ=0.5*λ,w=w,d=d,ape=a,rpe=r,ape2=aa,gap=0,res=0.2,limits=(-15,15,-20,2))
+    qd = Dielectric.qpm(md,md,md3)
+    if verbose:
+        print('λ',λ,'width',w,'Λ',qd.Λ,'η',qd.deadshgce)
+    return qd
 
 
 if __name__ == '__main__':
