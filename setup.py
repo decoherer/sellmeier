@@ -2,7 +2,7 @@ from setuptools import setup,find_packages
 
 setup(
     name="sellmeier",
-    version="1.1",
+    version="1.2",
     py_modules=[
         "sellmeier",
     ],

@@ -1,7 +1,7 @@
 import numpy as np
 from numpy import sqrt,pi,nan,inf,sign,abs,exp,log,sin,cos
 import scipy, scipy.optimize, functools
-import sell
+import sellmeier
 
 def gaussianfieldvstime(t,Δt,b=0): # gaussian pulse E(t), Δt = FWHM intensity, b = chirp
     return exp(-2*log(2)*t**2/Δt**2)*exp(1j*b*t**2) if b else exp(-2*log(2)*t**2/Δt**2)
