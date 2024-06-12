@@ -3,8 +3,8 @@
 import numpy as np
 from numpy import sqrt,pi,nan,inf,sign,abs,exp,log,sin,cos
 import scipy, scipy.optimize, functools
-from ridgesellmeier import *
-from optical import *
+from sellmeier.optical import *
+from sellmeier.ridgesellmeier import indexfunc
 # from qpm import Qpm
 
 # Lithium Niobate nonlinear coefficients:
@@ -218,10 +218,6 @@ def nzmglnridge(x): #make/o/n=401 nzmglnridge; setscale/i x,250,4250,nzmglnridge
     return 3.7813e-05-8.2301e-08*x-1.1761e-09*x**2
 def nzmglnhalfridge(x): #make/o/n=401 nzmglnhalfridge; setscale/i x,250,4250,nzmglnhalfridge; nzmglnhalfridge = 3.805e-05-8.2578e-08*x-1.083e-09*x^2 // 10x10um,5um cut MgLN ridge on SiO2
     return 3.805e-05-8.2578e-08*x-1.083e-09*x**2
-def ridgesellmeier(λ,width,depth,sell):
-    ...
-def ridgesellmeier(width,depth,sell): # returns fit coefficients
-    ...
 
 def index(w,sell,temp=20,warn=True): # x is wavelength in nm
     # np.warnings.filterwarnings('ignore')
@@ -276,8 +272,7 @@ def index(w,sell,temp=20,warn=True): # x is wavelength in nm
         n = index(x*1000,"lny",temp,warn=warn) + nzmglnhalfridge(x*1000)
     if "ridge" in sell and n is None:
         assert 'wg' in sell, f'"{sell}" is wrong format (e.g. mglnhalfridge3x7wgz)'
-        import ridgesellmeier
-        func = ridgesellmeier.indexfunc(sell)
+        func = indexfunc(sell)
         bulk = sell.split('ridge')[0].replace('half','')
         n = index(x*1000,bulk,temp,warn=warn) + func(x*1000)
     if sell=="gaymglnwg" or sell=="gaymglnwgz":

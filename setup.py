@@ -3,9 +3,8 @@ from setuptools import setup,find_packages
 setup(
     name="sellmeier",
     version="1.2",
-    py_modules=[
-        "sellmeier",
-    ],
+    packages=find_packages(),
+    # py_modules=["sellmeier"],
     author="decoherer",
     author_email="63128649+decoherer@users.noreply.github.com",
     description="Calculate index of refraction or poling period for various nonlinear optical materials.",
