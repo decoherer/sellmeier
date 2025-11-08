@@ -3,9 +3,6 @@ from numpy import sqrt,pi,nan,inf,sign,abs,exp,log,sin,cos
 import scipy, scipy.optimize, functools
 import sellmeier
 
-def gaussianfieldvstime(t,Δt,b=0): # gaussian pulse E(t), Δt = FWHM intensity, b = chirp
-    return exp(-2*log(2)*t**2/Δt**2)*exp(1j*b*t**2) if b else exp(-2*log(2)*t**2/Δt**2)
-# exp(-½t²/σ²) → σ exp(-½σ²ω²)
 def sqrfs2sqrnm(β): # β in fs²
     return 0.5 * (2*pi*299792458)**2 * (1e-15**2*β) * (1e9**2) # in nm²
 def sqrfs2pspernm(β,λ): # β in fs², λ in nm
@@ -131,6 +128,9 @@ def pulsesum(x,t,f0,reptime,dt,sell='air'): # dt = tFWHM
     fs = f0 + frr*np.linspace(-num,num,2*num+1)
     ns = (lambda x:1)(fs)
     return transformlimitedpulseamplitude(fs,f0,dt) * exp(1j*2*pi*fs*(x*ns/c-t))
+def gaussianfieldvstime(t,Δt,b=0): # gaussian pulse E(t), Δt = FWHM intensity, b = chirp
+    return exp(-2*log(2)*t**2/Δt**2)*exp(1j*b*t**2) if b else exp(-2*log(2)*t**2/Δt**2)
+# exp(-½t²/σ²) → σ exp(-½σ²ω²)
 def fwhmgaussian(x,x0,fwhm):
     return exp(-4 * log(2) * (x-x0)**2 / fwhm**2)
 def besselj(n,β): # sum (k=-inf to inf) of besselj(k,β)² = 1
@@ -199,6 +199,68 @@ def fabryperotloss(A,nn,verbose=False,dB=True):
     g = gr/r
     if verbose: print(f"A:{A:.3f}, GR:{gr:.4f}, R:{r:.4f}, G:{g:.3f}({10*np.log10(g):.2f}dB)")
     return 10*np.log10(g) if dB else g
+def fabryperotamplitude(λ,L,n,k=0,R=None): # λ in nm, L in mm, n = index, k = absorption index
+    R = R if R is not None else ((n-1)**2 + k**2) / ((n+1)**2 + k**2) # power reflectance of the facets
+    r1,r2 = np.sqrt(R),np.sqrt(R)
+    t1,t2 = np.sqrt(1-r1**2),np.sqrt(1-r2**2)
+    ψ = np.arctan(-2*k/(n**2) + k**2 - 1) # phase change due to facet reflection, HofstetterThornton1997
+    ϕ = (n+1j*k)*1e6*2*pi*L/λ + ψ
+    return -t1*t2*exp(-1j*ϕ) / (1 - r1*r2*exp(-2j*ϕ)) # https://en.wikipedia.org/wiki/Fabry%E2%80%93P%C3%A9rot_interferometer#Other_Airy_distributions
+def ringfsr(λ,sell,L): # λ in nm, L in mm, free spectral range in nm
+    return λ**2/(L*1e6*sellmeier.groupindex(λ,sell))
+def ringspectrum(λ0,sell,r,L,loss): # λ in nm, L in mm, loss is power attenuation in dB/cm
+    α = 0.1*loss*0.1/np.log10(np.e) # mm⁻¹
+    assert np.allclose(loss/10,α*10*np.log10(np.e)) # dbpermm = α*10*np.log10(np.e), α = 1/e power loss per mm
+    def a(λ):
+        return np.exp(-0.5*α*L + 1j*L*1e6*2*np.pi*index(λ,sell.lower())/λ) # Bogaerts2012, Silicon microring resonators, Eq 1
+    λs = λ0*(1 + 0.6e-6*λ0/L*np.linspace(-1,+1,10001))
+    return Wave([(r-a(λ))/(1-r*a(λ)) for λ in λs],λs).magsqr()
+def adddropspectrum(λ0,sell,L,α,r1,r2=None,drop=False): # λ in nm, L in mm, α in mm⁻¹
+    r2 = r2 if r2 is not None else r1
+    λs = λ0*(1 + 0.6e-6*λ0/L*np.linspace(-1,+1,1001))
+    a,βL = np.exp(-0.5*α*L), L*1e6*2*np.pi*index(λs,sell.lower())/λs
+    if drop: # return drop spectrum
+        return Wave(( (1-r1**2)*(1-r2**2)*a )/( 1 - 2*r1*r2*a*cos(βL) + r1*r1*r2*r2*a*a ),λs)
+    else: # return pass spectrum
+        return Wave(( r2*r2*a*a - 2*r1*r2*a*cos(βL) + r1*r1 )/( 1 - 2*r1*r2*a*cos(βL) + r1*r1*r2*r2*a*a ),λs)
+
+def gaussianbeamzw0(w,R,λ,get=None): # beam waist distance given radius and ROC
+    # ω² = ω₀² + z²/zr², R = z(1+zr²/z²), zr = πω₀²/λ
+    a = (pi/λ)**2 * w**4 / R**2
+    z,w0 = R/(1+1/a), w/sqrt(1+a)
+    return z if 'z'==get else w0 if get in ['w0','w','ω0','ω'] else (z,w0)
+def gaussianbeamz(w,R,λ): # beam waist distance given radius and ROC
+    return gaussianbeamzw0(w,R,λ,'z')
+def gaussianbeamw0(w,R,λ): # beam waist given radius and ROC
+    return gaussianbeamzw0(w,R,λ,'w0')
+def gaussianbeamw(z,w0,λ): # beam radius at distance z from beam waist
+    zr = pi*w0**2/λ
+    return w0*sqrt(1+(z/zr)**2)
+def gaussianbeamR(z,w0,λ): # radius of curvature of phase front at distance z from beam waist
+    zr = pi*w0**2/λ
+    return z*(1+zr**2/z**2)
+def gaussianbeamlensing(w0,d,ff,λ,m0=5,m1=5,singlewave=False): # given initial gaussian beam calulate propagation after lens, w0 = beam waist in µm, d = waist to lens distance in mm, ff = focal length of lens in mm, λ in nm
+    from wavedata import Wave
+    wf = gaussianbeamw(z=d,w0=w0,λ=λ)
+    Ra = -gaussianbeamR(z=d,w0=w0,λ=λ)
+    Rb = 1/( 1/Ra + 1/ff ) # print('Ra',Ra,'Rb',Rb)
+    zb,wb = gaussianbeamzw0(wf,Rb,λ) # print('wf',wf,'zb',zb,'wb',wb)
+    xs = np.linspace(-m0,d+zb+m1,10001)
+    ys = (xs<d)*gaussianbeamw(z=xs,w0=w0,λ=λ) + (xs>=d)*gaussianbeamw(z=xs-zb-d,w0=wb,λ=λ)
+    u = Wave(ys,xs) # return u,-u
+    return u if singlewave else (u(-inf,d),-u(-inf,d),u(d,inf),-u(d,inf))
+def lensedzw0(w0,d,ff,λ,plot=False): # given initial gaussian beam calulate new beam "after" lens
+    from wavedata import Wave
+    wf = gaussianbeamw(z=d,w0=w0,λ=λ)
+    Ra = -gaussianbeamR(z=d,w0=w0,λ=λ)
+    Rb = 1/( 1/Ra + 1/ff )
+    zb,wb = gaussianbeamzw0(wf,Rb,λ) # print('wf',wf,'zb',zb,'wb',wb,'Ra',Ra,'Rb',Rb)
+    if plot:
+        x = np.linspace(min(-1,d+zb-1),max(d+1,d+zb+1),10001)
+        ua = Wave(gaussianbeamw(z=x,w0=w0,λ=λ),x,'a')
+        ub = Wave(gaussianbeamw(z=x-zb-d,w0=wb,λ=λ),x,'b')
+        Wave.plot(ua,ub,lines=[0,d,zb+d],grid=1,x='z (mm)',y='ω (µm)',ylim=(0,None))
+    return zb+d,wb
 def interferenceintensity(I1,I2,θ):
     # Iout = I1 + I2 + 2√(I1 I2)cosθ where I1 = I2 = Iin/4
     return I1 + I2 + 2*np.sqrt(I1*I2)*np.cos(θ)
@@ -235,10 +297,20 @@ def bulkcapacitance(sell,A,d=1): # A in mm², d in mm, C = ε ε0 A / d
     ε = {'lnz':43,'lnx':28,'ktp':13}[sell]
     ε0 = 8.854 # pF/m
     return ε*ε0*1e-3*A/d # in pF
-def alpha2dB(α): # α in 1/mm, where loss = exp(-αL)
+def alpha2dB(α): # absorption coefficient α in 1/mm, where loss = exp(-αL)
     return 100*α/log(10) # loss in dB/cm
 def dB2alpha(dBpercm): # loss in dB/cm
     return dBpercm*log(10)/100 # α in 1/mm
+def absorptioncoefficient2loss(α):
+    return alpha2dB(α)
+def loss2absorptioncoefficient(dBpercm):
+    return dB2alpha(dBpercm)
+def absorptioncoefficient2k(α,λ): # α in 1/mm, λ in nm
+    return 1e-6*λ*α/(4*pi)
+def k2absorptioncoefficient(k,λ): # k unitless, λ in nm, α in 1/mm
+    return 4*pi*k/(1e-6*λ)
+def loss2k(dBpercm,λ):
+    return absorptioncoefficient2k(loss2absorptioncoefficient(dBpercm),λ)
 def photonpower(λ): # λ in nm, returns power in nW per GHz rate
     h,c = 6.62607015e-34,299792458
     return h*c/(λ*1e-9)*1e18

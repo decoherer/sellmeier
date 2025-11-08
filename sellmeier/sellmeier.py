@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 # coding: utf8
 import numpy as np
-from numpy import sqrt,pi,nan,inf,sign,abs,exp,log,sin,cos
+from numpy import sqrt,pi,nan,inf,sign,abs,exp,log,sin,cos,conj
 import scipy, scipy.optimize, functools
 from sellmeier.optical import *
 from sellmeier.ridgesellmeier import indexfunc
+from joblib import Memory
+memory = Memory('c:/backup', verbose=0) # use as @memory.cache
 # from qpm import Qpm
 
 # Lithium Niobate nonlinear coefficients:
@@ -17,12 +19,20 @@ from sellmeier.ridgesellmeier import indexfunc
 #  msesupplies d31=2.54, d32=4.35, d33=16.9, d24=3.64, d15=1.91
 # laser components d31=2.54, d32=4.35, d33=16.9, d24=3.64, d15=1.91
 
-def groupindex(λ,sell,temp=20,Δλ=0.01): # ng = n(λ) - λ dn/dλ = n(ω) + ω dn/dω
+def groupindex(λ,sell,temp=20,Δλ=1): # ng = n(λ) - λ dn/dλ = n(ω) + ω dn/dω
     Δn = index(λ+Δλ/2,sell,temp=temp) - index(λ-Δλ/2,sell,temp=temp) # print('n,λ,Δn,Δλ',index(λ,sell,temp=temp),λ,Δn,Δλ)
     return index(λ,sell,temp=temp) - λ*Δn/Δλ
-def dispersion(λ,sell,temp=20,Δλ=0.01): # returns dispersion in units of ps/nm/mm
+def dispersion(λ,sell,temp=20,Δλ=20): # returns dispersion in units of ps/nm/km
     Δigv = inversegroupvelocity(λ+Δλ/2,sell,temp) - inversegroupvelocity(λ-Δλ/2,sell,temp) # s/m
     return 1e12*1e3 * Δigv/Δλ # ps/nm/km
+def groupvelocitydispersion(λ0,sell,temp=20,Δλ=20): # returns GVD in ps²/km, given λ0 in nm
+    D = dispersion(λ0,sell=sell,temp=temp,Δλ=Δλ) # D in ps/nm/km
+    β2 = -D * (1e-12/1e-9/1000) * (λ0*1e-9)**2 / (2 * np.pi * 299792458)  # β2 in s²/m
+    return β2 * 1e12**2 * 1e3  # GVD in ps²/km
+def dispersionlength(dt,λ0,sell,temp=20,Δλ=20):  # returns dispersion length in m, given λ0 in nm and dt is gaussian fwhm in ps
+    τ = dt/sqrt(4*log(2)) # τ = 1/e² intensity half-width of pulse in ps for Gaussian
+    gvd = groupvelocitydispersion(λ0, sell, temp=temp, Δλ=Δλ)  # gvd in ps²/km
+    return 1e3 * τ**2 / abs(gvd)  # dispersion length in m
 def sqrfs2sqrnm(β): # β in fs²
     return 0.5 * (2*pi*299792458)**2 * (1e-15**2*β) * (1e9**2) # in nm²
 def sqrfs2pspernm(β,λ): # β in fs², λ in nm
@@ -218,11 +228,12 @@ def nzmglnridge(x): #make/o/n=401 nzmglnridge; setscale/i x,250,4250,nzmglnridge
     return 3.7813e-05-8.2301e-08*x-1.1761e-09*x**2
 def nzmglnhalfridge(x): #make/o/n=401 nzmglnhalfridge; setscale/i x,250,4250,nzmglnhalfridge; nzmglnhalfridge = 3.805e-05-8.2578e-08*x-1.083e-09*x^2 // 10x10um,5um cut MgLN ridge on SiO2
     return 3.805e-05-8.2578e-08*x-1.083e-09*x**2
-
 def index(w,sell,temp=20,warn=True): # x is wavelength in nm
+    if callable(sell): return sell(w)
     # np.warnings.filterwarnings('ignore')
-    from warnings import simplefilter
-    simplefilter(action='ignore', category=DeprecationWarning)
+    from warnings import filterwarnings
+    # filterwarnings(action='ignore', category=DeprecationWarning)
+    filterwarnings(action='ignore', category=RuntimeWarning, message="invalid value encountered in sqrt")
     if warn and not np.all(np.logical_or(np.isnan(w),np.logical_and(100<np.abs(w),np.abs(w)<10000))):
         # raise ValueError('Wavelength out of range, w = %g nm' % w)
         a = np.array(w).flatten()
@@ -244,7 +255,7 @@ def index(w,sell,temp=20,warn=True): # x is wavelength in nm
         n = 1
     if sell=="zerostep" or sell=="zerostepz" or sell=="zerostepy" or sell=="zerostepx":
         n = 0
-    if sell=="air" or sell=="airz" or sell=="airy" or sell=="airx":
+    if sell.startswith("air"):
         n = 1
     if sell=="lnwg" or sell=="lnwgz":
         n = index(x*1000,"ln",temp,warn=warn) + interp(x*1000,dnzlnx,dnzlny)
@@ -507,6 +518,14 @@ def index(w,sell,temp=20,warn=True): # x is wavelength in nm
     if sell=="lnsurfz":  ## sqrt(a+b/(x**2-c)-d*x**2)
         n = sellmeier2(x, 4.646e-3, 9.632e-4, 0.272**2, 0 )  ##Lenzini15 surface delta-n z-cut ne
         assert 20==temp, "lnsurfz temperature dependence of ln not defined"
+    if sell=="lnxcutstep" or sell=="lnxcutstepz":
+        n = index(1000*x,"lnsurfx",temp,warn=warn)
+    if sell=="lnxcutstepx" or sell=="lnxcutstepy":
+        n = index(1000*x,"lnsurfx",temp,warn=warn) * (-1/3)
+    if sell=="lnzcutstep" or sell=="lnzcutstepz":
+        n = index(1000*x,"lnsurfz",temp,warn=warn)
+    if sell=="lnzcutstepx" or sell=="lnzcutstepy":
+        n = index(1000*x,"lnsurfz",temp,warn=warn) * (-1/3)
     if sell=="lnjun":  ## sqrt(a+b/(x**2-c**2)+e/(x**2-f**2)-g*x**2)
         n = sellmeier10(x, 5.35583, 0.100473, 0.20692, 100, 11.34927, 1.5334e-2 ) ## Jundt97 LN ne
         assert 20==temp, "lnjun temperature dependence of ln not defined"
@@ -542,9 +561,9 @@ def index(w,sell,temp=20,warn=True): # x is wavelength in nm
         n = sellmeier18(x,+9.13,+3.85,-2.49)
         assert 20==temp, "lnganguly1z temperature dependence of ln not defined"
 
-    if sell=="sin" or sell=="sinz" or sell=="siny" or sell=="siliconnitride":
+    if sell=="sin" or sell=="sinz" or sell=="siny" or sell=="sinx" or sell=="siliconnitride":
         n = (1+3.0249/(1-(0.1353406/x)**2)+40314/(1-(1239.842/x)**2))**.5 # https://refractiveindex.info/?shelf=main&book=Si3N4&page=Luke
-    if sell=="si" or sell=="siz" or sell=="siy":
+    if sell=="si" or sell=="siz" or sell=="siy" or sell=="six":
         n =  sellmeier9(x,10.6684293,0.0030434748,1.54133408,0.301516485**2,1.13475115**2,1104**2)
         assert np.all(1.357<=x), f'λ<1357nm, silicon sellmeier out of range: λ={1000*x:g}nm'
         # if not np.all(1.357<=x): print(f'warning, λ<1357nm, silicon sellmeier out of range: λ={1000*x:g}nm')
@@ -555,7 +574,7 @@ def index(w,sell,temp=20,warn=True): # x is wavelength in nm
         n = np.real(pierceamorphoussilicon(x))
     if sell=="sichan" or sell=="sichanz" or sell=="sichany": # Chandler-Horowitz and Amirtharaj 2005
         n = sellmeier15(x,11.67316,0.004482633,1.108205**2)
-    if sell=="sio2" or sell=="sio₂" or sell=="sio2z" or sell=="sio2y" or sell=="sio2cvi":
+    if sell=="sio2" or sell=="sio₂" or sell=="sio2z" or sell=="sio2y" or sell=="sio2x" or sell=="sio2cvi":
         n = sellmeier9(x,6.96166300e-1,4.07942600e-1,8.97479400e-1,4.67914826e-3,1.35120631e-2,97.9340025)
     if sell=="sio2schott":
         n = sellmeier9(x,6.70710810E-01,4.33322857E-01,8.77379057E-01,4.49192312E-03,1.32812976E-02,9.58899878E+01)
@@ -585,9 +604,24 @@ def index(w,sell,temp=20,warn=True): # x is wavelength in nm
         n = sellmeier12(x, 2.3409, 1.4402, 0.04825, 1.8698, 171.27) ## Zelmon10
     if sell=="al2o3": # https://refractiveindex.info/tmp/data/main/Al2O3/Malitson-o.html
         n = (1+1.4313493/(1-(0.0726631/x)**2)+0.65054713/(1-(0.1193242/x)**2)+5.3414021/(1-(18.028251/x)**2))**.5
+    if sell in "cr ti ag al au cu nb".split():
+        page = {'cr':'Sytchkova','ti':'Johnson','ag':'McPeak','al':'McPeak','au':'McPeak','cu':'McPeak','nb':'Golovashkin-293K'}[sell]
+        λs,ns,ks = parserefractiveindexinfo(sell.title(),page)
+        from wavedata import Wave
+        n = Wave(ns+1j*ks,λs)(x)
+    dd = dict(acetone='organic acetone Chang',water='main H2O Hale',isopropyl='organic propanol Chang',sodalime='glass soda-lime Rubin-clear',kapton='other Kapton French',
+        noa61='other Norland_NOA-61 Norland',noa170='other Norland_NOA-170 Iezzi',noa1348='other Norland_NOA-1348 Iezzi',
+        su8='other Microchem_SU8_3000 specs',pmma='other Microchem950 specs')
+    sell = sell if sell not in dd else dd[sell]
+    if ' ' in sell:
+        s,b,p = sell.split(' ')
+        n = indexwave(s,b,p,dλ=1)(1000*x)
     x*=1000
     assert np.all(n!=None), f'{sell} index not defined'
-    if warn and not np.all(np.logical_or(np.isnan(n),n>=1)) and not sell in ['ktpsurfz','ktpsurfy','ktpsurfx','mikstepz','mikstepy','mikstepx','chestepz','chestepy','chestepx','lnsurfz','lnsurfx','michelsony','michelsonx','lnstrakey','lnstrakez','lnfouchet0y','lnfouchet1y','lnfouchet0z','lnfouchet1z','lnganguly0y','lnganguly1y','lnganguly0z','lnganguly1z','zerostep','zerostepx','zerostepy','zerostepz']:
+    stepsells = ['ktpsurfz','ktpsurfy','ktpsurfx','mikstepz','mikstepy','mikstepx','chestepz','chestepy','chestepx','lnsurfz','lnsurfx','michelsony','michelsonx']
+    stepsells += ['lnstrakey','lnstrakez','lnfouchet0y','lnfouchet1y','lnfouchet0z','lnfouchet1z','lnganguly0y','lnganguly1y','lnganguly0z','lnganguly1z','zerostep','zerostepx','zerostepy','zerostepz']
+    stepsells += ['lnxcutstep','lnxcutstepx','lnxcutstepy','lnxcutstepz','lnzcutstep','lnzcutstepx','lnzcutstepy','lnzcutstepz']
+    if warn and np.all(np.isreal(n)) and not np.all(np.logical_or(np.isnan(n),n>=1)) and not sell in stepsells:
         # raise ValueError('index is less than one for '+str(w)+'~'+str(temp)+'~'+sell)
         a = np.array(w).flatten()
         print('warning, index is less than one for '+(str(a) if len(a)<6 else f"{a[:2]}..{a[-2:]}")+'~'+str(temp)+'~'+sell)
@@ -606,6 +640,7 @@ def nsurffunc(x,a,b,c,d,f,g): return (a*1e-3) + (b*1e-6)*x + (c*1e-9)*x**2 + (d*
 def dnsz(x): return nsurffunc(x,*dnsz_coef)
 def dnsy(x): return nsurffunc(x,*dnsy_coef)
 def pierceamorphoussilicon(x): # https://refractiveindex.info/?shelf=main&book=Si&page=Pierce
+    assert 100<x<10000, 'input wavelength units are nm'
     def deal(n,aa):
         return [np.array(aa[i::n]) for i in range(n)]
     λ,n,k = deal(3,[1.033E-1,3.27E-1,7.26E-1,1.078E-1,3.63E-1,8.47E-1,1.127E-1,3.92E-1,9.46E-1,1.181E-1,4.23E-1,1.04E+0,1.240E-1,4.59E-1,1.14E+0,1.305E-1,
@@ -616,7 +651,7 @@ def pierceamorphoussilicon(x): # https://refractiveindex.info/?shelf=main&book=S
         4.46E+0,9.69E-1,5.636E-1,4.36E+0,6.90E-1,6.199E-1,4.23E+0,4.61E-1,6.526E-1,4.17E+0,3.63E-1,6.888E-1,4.09E+0,2.71E-1,7.293E-1,4.01E+0,1.99E-1,7.749E-1,
         3.93E+0,1.36E-1,8.266E-1,3.86E+0,8.12E-2,8.856E-1,3.77E+0,4.01E-2,9.538E-1,3.68E+0,0.00E+0,1.033E+0,3.61E+0,0.00E+0,1.127E+0,3.57E+0,0.00E+0,1.240E+0,
         3.54E+0,0.00E+0,1.378E+0,3.50E+0,0.00E+0,1.550E+0,3.48E+0,0.00E+0,1.771E+0,3.45E+0,0.00E+0,2.066E+0,3.44E+0,0.00E+0])
-    return np.interp(x,λ,n+1j*k)
+    return np.interp(x/1000,λ,n+1j*k)
 # ktpwg
 dnz = np.array([0.081609152,0.069072403,0.059035599,0.050996944,0.044555377,0.039390355,0.035114542,0.031669326,0.028887415,0.026634645,0.024803359,0.02330943,0.022083759,0.021072598,0.020232713,0.019532176,0.01894374,0.018441586,0.018008651,0.017631108,0.017297665,0.016999999,0.016730638,0.016484203,0.016256234,0.01604297,0.015841959,0.015650559,0.015467147,0.015290286,0.015118651,0.01495166,0.01478825,0.014628,0.014470444,0.014315051,0.014161839,0.014010255,0.013860269,0.013711731,0.013564358,0.013418374,0.013273377,0.013129791,0.012988581,0.012848243,0.012709077,0.012570725,0.012433335,0.01229689,0.012161202,0.01202662,0.011892776,0.011759845,0.011627819,0.011496508,0.011366286,0.011236769,0.011108147,0.010980418,0.010853379,0.01072744,0.010602185,0.010477823,0.010354352,0.010231555,0.010109866,0.0099888491,0.0098687224,0.0097494861,0.0096309111,0.0095134629,0.0093966695,0.0092807692,0.0091657611,0.0090513984,0.0089381756,0.0088255936,0.0087139048,0.0086031053,0.0084929382,0.0083839279,0.0082755461,0.0081680566,0.0080614584,0.0079554776,0.0078506609,0.0077464581,0.0076431422,0.007540714,0.0074388892,0.0073382431,0.0072381953,0.0071390336,0.0070407572,0.0069430685,0.0068465592,0.0067506325,0.0066555906,0.0065614297,0.006467842,0.0063754357,0.0062835952,0.006192633,0.0061025475,0.0060130181,0.0059246775,0.0058368878,0.0057499669,0.005663909,0.0055783927,0.0054940647,0.0054102717,0.0053273393,0.0052452646,0.0051637143,0.0050833495,0.0050035021,0.0049245013,0.0048463438,0.0047686924,0.0046922285,0.0046162629,0.0045411317,0.0044668298,0.004393016,0.0043203863,0.0042482382,0.004176911,0.0041064019,0.0040363632,0.0039674849,0.0038990695,0.0038338122,0.0037701533,0.0037069432,0.0036448755,0.0035832468,0.0035224082,0.003462354,0.0034027249,0.0033442162,0.0032861221,0.0032287838,0.0031721962,0.0031160086,0.0030609213,0.0030062238,0.0029522618,0.0028990291,0.0028461711,0.002794368,0.0027429289,0.0026921928,0.002642154,0.0025924644,0.0025437952,0.0024954651,0.0024478089,0.0024008222,0.0023541588,0.0023084716,0.0022630973,0.0022183622,0.0021742603,0.0021304563,0.0020875931,0.0020450177,0.0020030409,0.0019616575,0.0019205471,0.0018803311,0.0018403784,0.0018009912,0.0017621646,0.0017235863,0.0016858414,0.0016483355,0.0016113619,0.0015749155,0.0015386943,0.0015032537,0.0014680292,0.0014332976,0.0013990548,0.0013650146,0.0013317011,0.0012985814,0.0012659188,0.0012337092,0.0012016811,0.0011703324,0.0011391572,0.0011083955,0.0010780434,0.0010478526,0.0010189399,0.00099018659,0.00096397731,0.00094033137,0.00091686106,0.00089394109,0.00087117893,0.00084875297,0.00082665478,0.00080468942,0.00078321906,0.00076186511,0.00074079185,0.00071999151,0.00069928344,0.00067900162,0.00065879646,0.00063882192,0.0006190706,0.00059937342,0.00058003329,0.00056073273,0.00054161431,0.00052267086,0.00050374557,0.0004851261,0.00046651106,0.00044802565,0.00042966357,0.00041128497,0.0003931555,0.00037499637,0.00035692492,0.00033893515,0.00032089581,0.00030302975,0.00028510159,0.00026722642,0.00024939855,0.00023148935,0.00021369458,0.00019580638,0.00017792349,0.0001600403,0.00014204507,0.00012412733,0.0001060858,8.8006949e-05,6.9885384e-05,5.1621882e-05,3.3382632e-05,1.4989951e-05,4.5974239e-06,2.3090847e-06,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
 dnzx = np.array([300+i*10 for i in range(len(dnz))])
@@ -709,7 +744,7 @@ def polingperiodbandwidths(w1,w2=None,sell='ktpwg',Type='zzz',temp=20,w3=None,np
                 from wavedata import Wave
                 Wave.plots(*[Wave(ui,ux) for ui in [u,u,up,un,u1,u2]])
     if getfreq:
-        from optical import frequencybandwidth
+        from sellmeier import frequencybandwidth
         bw = {x:(frequencybandwidth(bw[x],bwparam[x]) if x in ['sfg1','sfg2','shg','dc1','dc2','dfg1','dfg2'] else bw[x]) for x in bw}
     bw['period'] = p0
     if kind: return bw[kinds[0]]
@@ -755,30 +790,30 @@ def amplitudemodulator(λ=810,sell='ktpwg',temp=25,L=10,E=0,vf=0.5,θ0=pi/4,φ0=
     # I = A² + B² + 2ABcos(φ)
     A,B = Ez*cos(θ0),Ey*sin(θ0)
     return A**2 + B**2 + 2*A*B*cos(φ)
-
-def jsiplot(w1=1550,w2=1550,temp=20,sell='ktpwg',Type='yzy',lengthinmm=10,dw=None,num=2001,dt=0,
+def gaussenergy(df,dt): # df = detuning in GHz, dt = ΔtFWHM in ns
+    # time-bandwidth product for intensity ΔtFWHM*ΔfFWHM = 2ln2/π = 0.4413 (Seigman p334)
+    ΔfFWHM = 2*log(2)/pi/(dt) # print('ΔfFWHM (GHz)=',ΔfFWHM*1e-9) # I = exp(-4*log(2)*(f-f0)**2/ΔfFWHM**2)
+    return exp(-2*log(2)*(df/ΔfFWHM)**2) if dt else 1
+@memory.cache
+def jsiplot(w1=1550,w2=1550,temp=20,sell='ktpwg',Type='yzy',npy=None,lengthinmm=10,dw=None,num=2001,dt=0,
         schmidt=False,minschmidt=False,schmidtres=400,filter=None,filtershape=None,rcavity=0,apodized=False,indistinguishability=True,
         swapaxes=False,intensity=True,plot=True,plotschmidt=0,get='',qpmargs=None,plotargs={}): # dt = ΔtFWHM in ns
     assert not (get and swapaxes)
     from sellmeier import pulsebandwidth,sinc
     f1,f2 = filter if isinstance(filter,(list,tuple)) else (filter,filter)
+    def isscalar(x):
+        return isinstance(x, (int, float, np.number))
     def bw(n):
         ppbw = polingperiodbandwidths(w1,w2,sell=sell,Type=Type,temp=temp,L=lengthinmm,kind=f'dc{n}')
-        pulsebw = pulsebandwidth(dt,w1 if 1==n else w2) if dt else 0
+        pulsebw = pulsebandwidth(dt,w1 if 1==n else w2) if isscalar(dt) and dt else 0
         fbw = f1 if 1==n else f2
         if fbw is None: return 8*max(pulsebw,ppbw)
         return min( 8*max(pulsebw,ppbw), 4*fbw if filtershape=='gaussian' else fbw)
     dw1,dw2 = dw if isinstance(dw,(list,tuple)) else (dw,dw)
     dw1,dw2 = dw1 if dw1 is not None else bw(1), dw2 if dw2 is not None else bw(2)
-    # dw = dw if dw is not None else 4*pulsebandwidth(dt,w1)
-    # dw = 2*filter if filter is not None else dw
-    # filter = filter if filter is not None else dw
-    # dw1,dw2 = dw if isinstance(dw,(list,tuple)) else (dw,dw)
-    # dw1,dw2 = 2*f1 if f1 is not None else dw1, 2*f2 if f2 is not None else dw2
-    # x0,x1,y0,y1 = w1-dw1/2,w1+dw1/2,w2-dw2/2,w2+dw2/2
     x0,x1,y0,y1 = w1-max(dw1,f1 if f1 else 0)/2,w1+max(dw1,f1 if f1 else 0)/2,w2-max(dw2,f2 if f2 else 0)/2,w2+max(dw2,f2 if f2 else 0)/2
     def period(x,y):
-        return polingperiod(w1=x,w2=y,sell=sell,Type=Type,temp=temp,qpmargs=qpmargs)
+        return polingperiod(w1=x,w2=y,sell=sell,Type=Type,temp=temp,npy=npy,qpmargs=qpmargs)
     p0 = period(w1,w2)
     def tophat(dx,width):
         return (-width/2 < dx) * (dx < width/2)
@@ -791,24 +826,31 @@ def jsiplot(w1=1550,w2=1550,temp=20,sell='ktpwg',Type='yzy',lengthinmm=10,dw=Non
         return fx*fy # 1 if filter is None else 1 * filtershape(x-w1,f1) * filtershape(y-w2,f2)
     def phasematching(x,y):
         if apodized:
+            if 3==apodized: # σ = 0.23
+                # ∫d(x)exp(iΔkx)dx = ∫exp(-0.5(x/L)²/0.23²)exp(iΔkx)dx = ∫exp(iΔkx-αx²)dx = √(π/α)exp(-Δk²/4α) = √(2πσ²L²)exp(-½Δk²σ²L²)
+                return exp(-0.5*( 2*pi * (1/period(x,y)-1/p0) * lengthinmm*1e3 * 0.23)**2)
             if 2==apodized:
-                return sinc( 2*pi * (1/period(x,y)-1/p0) * lengthinmm*1e3/2 )**2
+                return sinc( 2*pi * (1/period(x,y)-1/p0) * lengthinmm*1e3/4 )**2
             return exp(-0.193*( 2*pi * (1/period(x,y)-1/p0) * lengthinmm*1e3/2 )**2)  # sinc(ΔkL/2) ≈ exp(-0.193(ΔkL/2)²) smith,mahou,..walmsley2009 p7 # gaussian
         return sinc( 2*pi * (1/period(x,y)-1/p0) * lengthinmm*1e3/2 )
-    def energy(x,y): # time-bandwidth product for intensity ΔtFWHM*ΔfFWHM = 2ln2/π = 0.4413 (Seigman p334)
-        ΔfFWHM = 2*log(2)/pi/(dt*1e-9) # print('ΔfFWHM (GHz)=',ΔfFWHM*1e-9) # I = exp(-4*log(2)*(f-f0)**2/ΔfFWHM**2)
-        return exp(-2*log(2)*((1/abs(w1)-1/abs(x)+1/abs(w2)-1/abs(y))*1e9*299792458/ΔfFWHM)**2)
+    energyprofile = functools.partial(gaussenergy,dt=dt) if isscalar(dt) else dt
+    def energy(x,y): # x,y in nm
+        c = 299792458 # nm·GHz
+        df = (1/abs(w1)-1/abs(x)+1/abs(w2)-1/abs(y))*c # detuning in GHz
+        return energyprofile(df)
+        # return gaussenergy(df,dt)
+        # ΔfFWHM = 2*log(2)/pi/(dt*1e-9) # print('ΔfFWHM (GHz)=',ΔfFWHM*1e-9) # I = exp(-4*log(2)*(f-f0)**2/ΔfFWHM**2)
+        # return exp(-2*log(2)*((1/abs(w1)-1/abs(x)+1/abs(w2)-1/abs(y))*1e9*299792458/ΔfFWHM)**2)
     def cavity(x,y):
         if not rcavity:
             return 1
         φx = index(x,sell+Type[0])*2*pi*2*lengthinmm*1e6*(1/x-1/w1)
         φy = index(y,sell+Type[1])*2*pi*2*lengthinmm*1e6*(1/y-1/w2)
-        # return np.abs((1-rcavity)**2/(1-rcavity*exp(1j*φx))/(1-rcavity*exp(1j*φy)))
         return np.abs((1-rcavity)**2/(1-rcavity*exp(1j*φx))/(1-rcavity*exp(1j*φy)))
     x,y = np.linspace(x0,x1,num),np.linspace(y0,y1,num)
-    yy,xx = np.meshgrid(y,x) # yy,xx = np.mgrid[y0:y1:(num*1j), x0:x1:(num*1j)] # x,y are reversed!
+    yy,xx = np.meshgrid(y,x)
     from wavedata import Wave2D
-    zz = phasematching(xx,yy) * energy(xx,yy) * filterfunc(xx,yy) * cavity(xx,yy) if dt else phasematching(xx,yy) * cavity(xx,yy)
+    zz = phasematching(xx,yy) * energy(xx,yy) * filterfunc(xx,yy) * cavity(xx,yy)
     w = Wave2D(zz.T,xs=y,ys=x) if swapaxes else Wave2D(zz,xs=x,ys=y)
     if get=='energy': return Wave2D(energy(xx,yy).T,xs=y,ys=x)
     if get=='phasematching': return Wave2D(phasematching(xx,yy).T,xs=y,ys=x)
@@ -829,93 +871,44 @@ def jsiplot(w1=1550,w2=1550,temp=20,sell='ktpwg',Type='yzy',lengthinmm=10,dw=Non
     def diffmax(w):
         return max([u.diff().abs().max() for u in w.xwaves()] + [u.diff().abs().max() for u in w.ywaves()])
     def perimetermax(w):
-       return w.abs().perimeter().max()/w.abs().max()
+        return w.abs().perimeter().max()/w.abs().max()
     if diffmax(w)>0.1:
-        print(f'warning, jsiplot diff amplitude greater than 10% max, use finer grid: {100*diffmax(w):g}%')
+        print(f'warning, use finer grid, jsiplot diff amplitude greater than 10% max: {100*diffmax(w):g}%')
     if perimetermax(w)>0.01:
-        print(f'warning, jsiplot edge amplitude greater than 1% max, use expanded grid: {100*perimetermax(w):g}%')
-    name = f"{'jsi' if intensity else 'jsa'} {Type} {'backward'+str(-w1) if w1<0 else str(w1)}+{'backward'+str(-w2) if w2<0 else str(w2)} {sell} {lengthinmm}mm {dt*1000:g}pspump"
+        print(f'warning, use expanded grid, jsiplot edge amplitude greater than 1% max: {100*perimetermax(w):g}%')
+    name = f"{'jsi' if intensity else 'jsa'} {Type} {'backward'+str(-w1) if w1<0 else str(w1)}+{'backward'+str(-w2) if w2<0 else str(w2)} {sell} {lengthinmm}mm"
+    name = name+f" {dt*1000:g}pspump" if isscalar(dt) else name
     name = name+f" {rcavity:g}R {dw}nm" if rcavity else name
     name = name if filter is None else name+f', {f1,f2}nm filters'
     name = name+" apodized" if apodized else name
-    if schmidt or minschmidt:
+    if schmidt or minschmidt or get in ['K','purity']:
         modes = schmidtdecomposition(w,schmidtres)
         K = np.abs(schmidtnumber(modes))
-        print(f'τ = {dt}, K = {K}, purity = {100/K}%, {np.abs(sum([mode[0]**2 for mode in modes]))}')
+        dtps = f"{dt*1000:g}ps" if isscalar(dt) else 'nan'
+        print(f'τ = {dtps}, K = {K:g}, purity = {100/K:g}%, sum = {np.abs(sum([mode[0]**2 for mode in modes])):g}')
         if plotschmidt:
             wws = schmidtmodes(modes,w.xs,w.ys)
             for i,ww in enumerate(wws[:plotschmidt]):
                 ww.plot(x=xlabel,y=ylabel,xlim=xlim,ylim=ylim,legendtext=f'Schmidt mode {i}\nSchmidt coefficient {modes[i][0]**2:.3g}',
                     save=name+f' schmidt mode {i}',colormesh=1,show=0)
             sum(wws[:plotschmidt]).plot(x=xlabel,y=ylabel,xlim=xlim,ylim=ylim,save=name+f' sum of {plotschmidt} schmidt modes',colormesh=1,show=0)
-        legendtext = f"L = {lengthinmm}mm\nΛ = {abs(p0):.1f}µm\npulse FWHM = {1000*dt:g}ps\nK = {K:.3f}\npurity = {100/K:.1f}%"
+        legendtext = f"L = {lengthinmm}mm\nΛ = {abs(p0):.1f}µm\npulse FWHM = {dtps}\nK = {K:.3f}\npurity = {100/K:.1f}%"
         if w1==w2 and indistinguishability:
             legendtext += f"\nI = {100*w.indistinguishability():.1f}%"
         plotargs={'legendtext':legendtext,**plotargs}
     if get=='jsa': return w
     if get=='jsi': return w**2
-    if get=='purity': return 1/K
+    if get=='purity' or get.lower()=='p': return 1/K
     if get=='K': return K
-    if intensity: w = w**2
+    if intensity: w = w.magsqr()
     if plot: 
         w.plot(x=xlabel,y=ylabel,xlim=xlim,ylim=ylim,save=name,colormesh=1,**plotargs)
     if schmidt or minschmidt:
-        w.K,w.purity,w.modes = K,1/K,modes
-    return w,dt
-# def apodizedjsiplot(w1=1550,w2=1550,temp=20,sell='ktpwg',Type='yzy',lengthinmm=10,dw=1,num=2001,dt=0,schmidt=False,minschmidt=False,schmidtres=400,
-#     filter=None,swapaxes=False,intensity=True,plot=True,plotschmidt=0,qpmargs=None,plotargs={}): # dt = ΔtFWHM in ns
-#     # modified for apodization
-#     filter = dw if filter is None else filter
-#     f1,f2 = filter if isinstance(filter,(list,tuple)) else (filter,filter)
-#     dw1,dw2 = dw if isinstance(dw,(list,tuple)) else (dw,dw)
-#     x0,x1,y0,y1 = w1-max(dw1,f1)/2,w1+max(dw1,f1)/2,w2-max(dw2,f2)/2,w2+max(dw2,f2)/2
-#     def period(x,y):
-#         return polingperiod(w1=x,w2=y,temp=temp,sell=sell,Type=Type,qpmargs=qpmargs)
-#     p0 = period(w1,w2)
-#     def filterfunc(x,y):
-#         def tophat(x,x0,width): return (-width/2 < x-x0) * (x-x0 < width/2)
-#         return 1 if filter is None else 1 * tophat(x,w1,f1) * tophat(y,w2,f2)
-#     def jsa(x,y):
-#         # return sinc( 2*pi * (1/period(x,y)-1/p0) * lengthinmm*1e3/2      *0.5)**2
-#         # gaussian # 
-#         return exp(-0.193*( 2*pi * (1/period(x,y)-1/p0) * lengthinmm*1e3/2 )**2)  # sinc(ΔkL/2) ≈ exp(-0.193(ΔkL/2)²) smith,mahou,..walmsley2009 p7
-#     def energy(x,y): # time-bandwidth product for intensity ΔtFWHM*ΔfFWHM = 2ln2/pi = 0.4413 (Seigman p334)
-#         ΔfFWHM = 2*log(2)/pi/(dt*1e-9) # print('ΔfFWHM (GHz)=',ΔfFWHM*1e-9,'at FWHM 0.5=',exp(-4*log(2)*(0.5)**2/1**2),'Λ=',p0)
-#         return exp(-2*log(2)*((1/abs(w1)-1/abs(x)+1/abs(w2)-1/abs(y))*1e9*299792458/ΔfFWHM)**2) # exp(-4*log(2)*(f-f0)**2/ΔfFWHM**2)
-#     x,y = np.linspace(x0,x1,num),np.linspace(y0,y1,num)
-#     yy,xx = np.meshgrid(y,x) # yy,xx = np.mgrid[y0:y1:(num*1j), x0:x1:(num*1j)] # x,y are reversed!
-#     zz = jsa(xx,yy) * energy(xx,yy) * filterfunc(xx,yy) if dt else jsa(xx,yy)
-#     from wavedata import Wave2D
-#     w = Wave2D(zz.T,xs=y,ys=x) if swapaxes else Wave2D(zz,xs=x,ys=y)
-#     if minschmidt:
-#         def f(a):
-#             w = apodizedjsiplot(w1=w1,w2=w2,temp=temp,sell=sell,Type=Type,lengthinmm=lengthinmm,dw=dw,num=num,dt=a[0],schmidt=False,minschmidt=False,schmidtres=schmidtres,
-#                 filter=filter,swapaxes=swapaxes,intensity=0,plot=0,qpmargs=qpmargs)
-#             return schmidtnumber(schmidtdecomposition(w,schmidtres))
-#         result = scipy.optimize.minimize(f, [dt if dt else 0.001], method='Nelder-Mead', options={'disp':True},tol=0.001) # remove method, more robust?
-#         dt = result.x[0]
-#         return apodizedjsiplot(w1=w1,w2=w2,temp=temp,sell=sell,Type=Type,lengthinmm=lengthinmm,dw=dw,num=num,dt=dt,schmidt=True,minschmidt=False,schmidtres=schmidtres,
-#             filter=filter,swapaxes=swapaxes,intensity=intensity,plot=plot,qpmargs=qpmargs,plotargs=plotargs)
-#     xlabel,ylabel = (f"λ{'s' if Type[0]==Type[1] else Type[0]} (nm)",f"λ{'i' if Type[0]==Type[1] else Type[1]} (nm)")
-#     if swapaxes: xlabel,ylabel = ylabel,xlabel
-#     xlim,ylim = (w1-dw1/2,w1+dw1/2),(w2-dw2/2,w2+dw2/2)
-#     if swapaxes: xlim,ylim = ylim,xlim
-#     name = f"apodized {'jsi' if intensity else 'jsa'} {Type} {'backward'+str(-w1) if w1<0 else str(w1)}+{'backward'+str(-w2) if w2<0 else str(w2)} {sell} {lengthinmm}mm {dt*1000:.1f}pspump"
-#     name = name if filter is None else name+f', {f1,f2}nm filters'
-#     if schmidt or minschmidt:
-#         w.modes = schmidtdecomposition(w,schmidtres)
-#         w.K = schmidtnumber(w.modes)
-#         print(f'τ = {dt}, K = {w.K}, purity = {100/w.K}%, {sum([mode[0]**2 for mode in w.modes])}')
-#         if plotschmidt:
-#             wws = schmidtmodes(w.modes,w.xs,w.ys)
-#             for i,ww in enumerate(wws[:plotschmidt]):
-#                 ww.plot(x=xlabel,y=ylabel,xlim=xlim,ylim=ylim,legendtext=f'Schmidt mode {i}\nSchmidt coefficient {w.modes[i][0]**2:.3g}',save=name+f' schmidt mode {i}',colormesh=1,show=0)
-#             sum(wws[:plotschmidt]).plot(x=xlabel,y=ylabel,xlim=xlim,ylim=ylim,save=name+f' sum of {plotschmidt} schmidt modes',colormesh=1,show=0)
-#         legendtext = f"L = {lengthinmm}mm\nΛ = {abs(p0):.1f}µm\npulse FWHM = {1000*dt:g}ps\nK = {w.K:.3f}\npurity = {100/w.K:.1f}%"
-#         plotargs={'legendtext':legendtext,**plotargs}
-#     if intensity: w = w**2
-#     if plot: w.plot(x=xlabel,y=ylabel,xlim=xlim,ylim=ylim,save=name,colormesh=1,**plotargs)
-#     return w,dt
+        # w.K,w.purity,w.modes = K,1/K,modes
+        w.K,w.purity = K,1/K
+    if isscalar(dt):
+        w.dt = dt
+    return w
 def schmidtmodes(modes,xs,ys,freqspace=True):
     from wavedata import Wave2D
     sxys = [(fx(1/xs),fy(1/ys)) if freqspace else (fx(xs),fy(ys)) for m,fx,fy in modes]
@@ -1041,8 +1034,7 @@ def phasematchcurve(w1=None,w2=None,Λ=None,x0=500,x1=3000,dx=5,prop=None,plot=F
     yy,xx = np.meshgrid(y,x)
     zz = 1./pperiod(xx*prop[0],yy*prop[1])
     z0 = 1./pperiod(w1,w2) if w1 is not None else 1/Λ
-    print('prop',prop)
-    print('Λ',1/z0)
+    print('Λ',1/z0,'prop',prop)
     from skimage import measure
     contours = measure.find_contours(zz,z0, fully_connected='low', positive_orientation='low')
     # convert to single contour separated by nans
@@ -1197,6 +1189,66 @@ def qpmphasematchcontours(Λ,x0=800,x1=1600,dx=100,qpmargs=None,ppargs=None):
         wx,wy = Wave(x),Wave(y)
         return [Wave( wy(c[:,1]), wx(c[:,0]) ) for c in cs][0] if cs else Wave()
     return contourwave(1./Λ).rename(f"{Λ:g}µm")
+def parserefractiveindexinfo(url,*args):
+    url = f'https://refractiveindex.info/database/data-nk/main/{url}/{args[0]}.yml' if args else url
+    import requests
+    response = requests.get(url)
+    if response.status_code != 200:
+        print(f"Failed to fetch {url}. Status code: {response.status_code}")
+        return None,None,None
+    content = response.text
+    data_start = content.find('data: |') + len('data: |')
+    data_end = content.find('SPECS:')
+    data_end = len(content) if data_end == -1 else data_end
+    data_lines = content[data_start:data_end].strip().splitlines()
+    wavelengths, n_values, k_values = [], [], []
+    for line in data_lines:
+        parts = line.split()
+        assert len(parts) == 3, f"invalid line parsing {url}: {line}"
+        wavelengths.append(float(parts[0]))
+        n_values.append(float(parts[1]))
+        k_values.append(float(parts[2]))
+    return np.array(wavelengths), np.array(n_values), np.array(k_values)
+def getbooks(shelf=None): # shelf = main,glass,organic,other
+    from refractiveindex import RefractiveIndex # !!! note - need to modify c:/python310/lib/site-packages/refractiveindex/__init__.py: from .refractiveindex import RefractiveIndexMaterial,RefractiveIndex
+    book = [b['BOOK'] for sh in RefractiveIndex().catalog for b in sh['content'] if 'DIVIDER' not in b if (shelf is None or sh['SHELF']==shelf)]
+    return book
+# print('booklist',' '.join(getbooks()))
+def getpages(book,verbose=False):
+    from refractiveindex import RefractiveIndex # !!! need to modify c:/python310/lib/site-packages/refractiveindex/__init__.py: from .refractiveindex import RefractiveIndexMaterial,RefractiveIndex
+    b = [b for sh in RefractiveIndex().catalog for b in sh['content'] if 'DIVIDER' not in b and b['BOOK'] == book]
+    if len(b) != 1: raise ValueError(f"book {book} not found")
+    pages = [p['PAGE'] for p in b[0]['content'] if 'DIVIDER' not in p]
+    if verbose:
+        for k in [k for k in b[0].keys() if k!='content']: print(f"{k}: {b[0][k]}")
+        print('PAGE:')
+        for p in pages: print(f"  {p}")
+    return pages
+def getindex(s,b,p,λ): # λ in nm
+    from refractiveindex import RefractiveIndexMaterial
+    m = RefractiveIndexMaterial(shelf=s,book=b,page=p)
+    n = m.get_refractive_index(λ)
+    try:
+        k = m.get_extinction_coefficient(λ)
+        return n + 1j*k
+    except:
+        return n
+# print(getindex('main','Si','Franta',800))
+# print(getindex('other','Mg-LiTaO3','Moutzouris-e',1000))
+# print(getindex('main','Si','Franta',80)) # bounds error gives the bounds
+def indexwave(s,b,p,dλ=100): # dλ in nm
+    from refractiveindex import RefractiveIndexMaterial
+    from wavedata import Wave
+    with np.errstate(invalid='ignore'):
+        d = RefractiveIndexMaterial(shelf=s,book=b,page=p).material.refractiveIndex
+        try:
+            # print((s,b,p)) # print(d.__class__.__name__,d.rangeMin,d.rangeMax)
+            λs = dλ*np.arange(np.ceil(d.rangeMin*1000/dλ),np.floor(d.rangeMax*1000/dλ)+1)
+            ns = np.array([d.getRefractiveIndex(λ) for λ in λs])
+            return Wave(ns,λs,f'{b} {p}') if len(λs) else Wave([nan],[nan],f'{b} {p}')
+        except Exception as e:
+            print(e,(s,b,p), d.rangeMin if hasattr(d,'rangeMin') else '', d.rangeMax if hasattr(d,'rangeMax') else '', d if d is None else '') # print(f"error: {s} {b} {p}")
+
 
 if __name__ == '__main__':
     def test():
@@ -1205,4 +1257,5 @@ if __name__ == '__main__':
         print(polingperiod(1064,1064,'ktp'))
         print(polingperiod(1064,1064,'ktpwg'))
         print(polingperiodbandwidths(1064,1064,'ktpwg'))
+        for s in 'main organic glass other'.split(): print(' '.join(getbooks(s))+'\n')
     # test()
