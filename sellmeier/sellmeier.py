@@ -172,7 +172,7 @@ def expansionref(temp,sell):
     if 'rta' in sell:
         return 15.1e-6 * (temp-20)
     if 'rtp' in sell:
-        return expansion(temp,'rta')
+        return expansionref(temp,'rta')
     if 'ktp' in sell or any(s in sell for s in ['eman','kat','fan','van','frad','che']):
         ##alpha = 11e-6 * (temp-20)
         return 6.7e-6 * (temp-25) + 11e-9 * (temp-25)**2  ## x-prop emanueli03
