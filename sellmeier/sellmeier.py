@@ -161,7 +161,7 @@ def polingperiod2temperature(w1,w2=None,sell='ktpwg',Type=0,npy=None,npz=None,w3
 def polingperiod2nonpoled(w1,w2=None,sell='ktpwg',Type=0,temp=20,npy=None,npz=None,w3=None,*,Λ):
     w1,w2,_ = qpmwavelengths(w1,w2,w3)
     return polingperiod(w1,w2,sell,Type,temp=temp,npy=npy,npz=npz,Λ=Λ)
-def expansion(temp,sell):
+def expansionref(temp,sell):
     sell = sell.replace('wg','')
     if 'ln' in sell and sell[-1] in 'xy':
         return 5e-6 * (temp-20)  ## ranges from 2e-6 to 7e-6, see Browder77,Howlander06
@@ -181,6 +181,8 @@ def expansion(temp,sell):
     assert 20==temp, 'no thermal expansion defined for '+sell+' at temp = '+str(temp)
     # if not 20==temp: print('zero thermal expansion',sell)
     return 0
+def expansion(temp, sell, referencetemp=20):
+    return expansionref(temp, sell) - expansionref(referencetemp, sell)
 def sellmeier(x,a,b,c,d):
     return sqrt(a+b/(1-c/x**2)-d*x**2)
 def sellmeier2(x,a,b,c,d):
